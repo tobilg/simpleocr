@@ -67,3 +67,4 @@ requirements/
 examples/
 .claude/
 examples/
+*.pdf
