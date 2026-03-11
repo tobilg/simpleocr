@@ -1,6 +1,6 @@
 import Foundation
 
-let version = "0.1.0"
+let version = "0.1.3"
 
 let supportedExtensions: Set<String> = [
     "jpg", "jpeg", "png", "tiff", "tif", "heic", "heif", "bmp", "gif"
@@ -8,20 +8,69 @@ let supportedExtensions: Set<String> = [
 
 let usage = """
 Usage: simpleocr <image-path> [options]
+       simpleocr - [options]              (read image from stdin)
 
 Arguments:
-  image-path              Path to input image file
+  image-path              Path to input image file (use "-" for stdin)
 
 Options:
   --lang <codes>          Comma-separated language codes (default: de-DE,en-US)
   --mode <level>          Recognition level: accurate or fast (default: accurate)
-  --format <type>         Output format: text, json, table-json, pdf-text, or pdf-image (default: text)
+  --format <type>         Output format: plain, text, json, table-json, pdf-text, or pdf-image (default: text)
   --output <path>         Output file path for PDF formats (defaults to input name with .pdf)
   --min-confidence <val>  Minimum confidence threshold (default: 0.3)
   --pii                   Redact personally identifiable information from output
+  --error-format <type>   Error output format: text or json (default: text)
+  --describe-formats      Describe available output formats and exit
   --version               Print version and exit
   --help, -h              Print this help and exit
 """
+
+let formatDescriptions = """
+Available output formats:
+
+  plain       Plain text output, one line per recognized text element, sorted
+              top-to-bottom then left-to-right. Best for feeding into LLMs or
+              other text processing tools.
+              Example:
+                Firmenname
+                Ihr Partner in Sachen Dienstleistungen!
+
+  text        Spatially-aware text with normalized coordinates (y,x) prepended
+              to each line. Useful when position matters.
+              Example:
+                [y=0.08,x=0.06] Firmenname
+                [y=0.11,x=0.06] Ihr Partner in Sachen Dienstleistungen!
+
+  json        Full JSON output with all observations, bounding boxes, confidence
+              scores, and inferred structured regions. Includes image metadata.
+              Schema: { source, image_size, language_hints, recognition_level,
+                        pii_redacted, observations[], structured_regions[] }
+
+  table-json  JSON output containing only inferred table-like structured regions
+              with row/cell structure derived from spatial layout analysis.
+              Schema: { source, image_size, language_hints, recognition_level,
+                        pii_redacted, tables[] }
+
+  pdf-text    Generates a PDF with rendered OCR text only. Writes to --output
+              path or defaults to input filename with .pdf extension.
+
+  pdf-image   Generates a PDF with the original image and an invisible text
+              overlay for search and copy/paste. Writes to --output path or
+              defaults to input filename with .pdf extension.
+
+Exit codes:
+  0  Success
+  1  Invalid arguments or file not found
+  2  Unsupported image format
+  3  OCR processing failed
+  4  PDF generation failed
+"""
+
+enum ErrorFormat: String {
+    case text
+    case json
+}
 
 struct CLIConfiguration: Equatable {
     let imagePath: String
@@ -31,6 +80,7 @@ struct CLIConfiguration: Equatable {
     let minConfidence: Float
     let redactPII: Bool
     let outputPath: String?
+    let errorFormat: ErrorFormat
 }
 
 struct ResolvedCLIConfiguration: Equatable {
@@ -47,6 +97,7 @@ struct ResolvedCLIConfiguration: Equatable {
 enum CLICommand: Equatable {
     case help
     case version
+    case describeFormats
     case run(CLIConfiguration)
 }
 
@@ -69,6 +120,7 @@ enum CLI {
         var minConfidence: Float = 0.3
         var redactPII = false
         var outputPath: String?
+        var errorFormat: ErrorFormat = .text
 
         var index = 0
         while index < arguments.count {
@@ -80,6 +132,9 @@ enum CLI {
 
             case "--version":
                 return .version
+
+            case "--describe-formats":
+                return .describeFormats
 
             case "--lang":
                 index += 1
@@ -109,7 +164,7 @@ enum CLI {
                 }
                 guard let parsedFormat = OutputFormat(rawValue: arguments[index]) else {
                     throw CLIUserError(
-                        message: "Error: --format must be 'text', 'json', 'table-json', 'pdf-text', or 'pdf-image'",
+                        message: "Error: --format must be 'plain', 'text', 'json', 'table-json', 'pdf-text', or 'pdf-image'",
                         exitCode: 1
                     )
                 }
@@ -138,8 +193,18 @@ enum CLI {
             case "--pii":
                 redactPII = true
 
+            case "--error-format":
+                index += 1
+                guard index < arguments.count else {
+                    throw CLIUserError(message: "Error: --error-format requires a value", exitCode: 1)
+                }
+                guard let parsedErrorFormat = ErrorFormat(rawValue: arguments[index]) else {
+                    throw CLIUserError(message: "Error: --error-format must be 'text' or 'json'", exitCode: 1)
+                }
+                errorFormat = parsedErrorFormat
+
             default:
-                if arg.hasPrefix("-") {
+                if arg.hasPrefix("-") && arg != "-" {
                     throw CLIUserError(message: "Error: Unknown option '\(arg)'", exitCode: 1)
                 }
                 if imagePath == nil {
@@ -163,31 +228,54 @@ enum CLI {
             outputFormat: outputFormat,
             minConfidence: minConfidence,
             redactPII: redactPII,
-            outputPath: outputPath
+            outputPath: outputPath,
+            errorFormat: errorFormat
         ))
     }
 
     static func resolve(configuration: CLIConfiguration) throws -> ResolvedCLIConfiguration {
-        let expandedPath = NSString(string: configuration.imagePath).expandingTildeInPath
-        let fileURL = URL(fileURLWithPath: expandedPath)
+        let expandedPath: String
+        let fileURL: URL
 
-        guard FileManager.default.isReadableFile(atPath: expandedPath) else {
-            throw CLIUserError(
-                message: "Error: File not found or unreadable: \(configuration.imagePath)",
-                exitCode: 1
-            )
-        }
+        if configuration.imagePath == "-" {
+            // Read image data from stdin and write to a temp file
+            let stdinData = FileHandle.standardInput.readDataToEndOfFile()
+            guard !stdinData.isEmpty else {
+                throw CLIUserError(message: "Error: No data received on stdin", exitCode: 1)
+            }
+            let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("simpleocr-stdin-\(ProcessInfo.processInfo.processIdentifier).png")
+            try stdinData.write(to: tempURL)
+            expandedPath = tempURL.path
+            fileURL = tempURL
+        } else {
+            expandedPath = NSString(string: configuration.imagePath).expandingTildeInPath
+            fileURL = URL(fileURLWithPath: expandedPath)
 
-        let ext = fileURL.pathExtension.lowercased()
-        guard supportedExtensions.contains(ext) else {
-            throw CLIUserError(
-                message: "Error: Unsupported image format '.\(ext)'. Supported: jpg, jpeg, png, tiff, tif, heic, heif, bmp, gif",
-                exitCode: 2
-            )
+            guard FileManager.default.isReadableFile(atPath: expandedPath) else {
+                throw CLIUserError(
+                    message: "Error: File not found or unreadable: \(configuration.imagePath)",
+                    exitCode: 1
+                )
+            }
+
+            let ext = fileURL.pathExtension.lowercased()
+            guard supportedExtensions.contains(ext) else {
+                throw CLIUserError(
+                    message: "Error: Unsupported image format '.\(ext)'. Supported: jpg, jpeg, png, tiff, tif, heic, heif, bmp, gif",
+                    exitCode: 2
+                )
+            }
         }
 
         let outputPath: String?
         if configuration.outputFormat.isPDF && configuration.outputPath == nil {
+            if configuration.imagePath == "-" {
+                throw CLIUserError(
+                    message: "Error: --output is required when reading from stdin with PDF format",
+                    exitCode: 1
+                )
+            }
             outputPath = URL(fileURLWithPath: expandedPath)
                 .deletingPathExtension()
                 .appendingPathExtension("pdf").path
@@ -212,6 +300,13 @@ enum CLI {
         stdout: (String) -> Void = { Swift.print($0) },
         stderr: (String) -> Void = printError
     ) -> Int32 {
+        // Pre-scan for --error-format to use it in error handling
+        let useJSONErrors: Bool = {
+            guard let idx = arguments.firstIndex(of: "--error-format"),
+                  idx + 1 < arguments.count else { return false }
+            return arguments[idx + 1] == "json"
+        }()
+
         do {
             let command = try parse(arguments: arguments)
             switch command {
@@ -223,13 +318,18 @@ enum CLI {
                 stdout("simpleocr \(version)")
                 return 0
 
+            case .describeFormats:
+                stdout(formatDescriptions)
+                return 0
+
             case .run(let configuration):
                 let resolved = try resolve(configuration: configuration)
                 var result = try OCREngine.performOCR(
                     on: resolved.fileURL,
                     languages: resolved.languages,
                     mode: resolved.mode,
-                    minConfidence: resolved.minConfidence
+                    minConfidence: resolved.minConfidence,
+                    outputFormat: resolved.outputFormat
                 )
 
                 if resolved.redactPII {
@@ -272,14 +372,34 @@ enum CLI {
                 return 0
             }
         } catch let error as CLIUserError {
-            stderr(error.message)
+            if useJSONErrors {
+                stderr(jsonError(error.message, code: error.exitCode))
+            } else {
+                stderr(error.message)
+            }
             return error.exitCode
         } catch let error as CLIError {
-            stderr("Error: \(error.message)")
+            if useJSONErrors {
+                stderr(jsonError(error.message, code: error.exitCode))
+            } else {
+                stderr("Error: \(error.message)")
+            }
             return error.exitCode
         } catch {
-            stderr("Error: \(error.localizedDescription)")
+            if useJSONErrors {
+                stderr(jsonError(error.localizedDescription, code: 3))
+            } else {
+                stderr("Error: \(error.localizedDescription)")
+            }
             return 3
         }
+    }
+
+    private static func jsonError(_ message: String, code: Int32) -> String {
+        let escaped = message
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        return "{\"error\":\"\(escaped)\",\"code\":\(code)}"
     }
 }

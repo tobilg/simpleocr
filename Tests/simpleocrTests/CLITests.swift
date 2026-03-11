@@ -29,7 +29,8 @@ final class CLITests: XCTestCase {
             outputFormat: .json,
             minConfidence: 0.8,
             redactPII: true,
-            outputPath: nil
+            outputPath: nil,
+            errorFormat: .text
         )))
     }
 
@@ -46,7 +47,8 @@ final class CLITests: XCTestCase {
             outputFormat: .tableJSON,
             minConfidence: 0.3,
             redactPII: false,
-            outputPath: nil
+            outputPath: nil,
+            errorFormat: .text
         )))
     }
 
@@ -82,7 +84,8 @@ final class CLITests: XCTestCase {
             outputFormat: .pdfImage,
             minConfidence: 0.3,
             redactPII: false,
-            outputPath: nil
+            outputPath: nil,
+            errorFormat: .text
         ))
 
         XCTAssertEqual(resolved.outputPath, tempDir.appendingPathComponent("scan.pdf").path)
@@ -104,7 +107,8 @@ final class CLITests: XCTestCase {
             outputFormat: .text,
             minConfidence: 0.3,
             redactPII: false,
-            outputPath: nil
+            outputPath: nil,
+            errorFormat: .text
         ))) { error in
             let userError = try XCTUnwrap(error as? CLIUserError)
             XCTAssertEqual(userError.exitCode, 2)

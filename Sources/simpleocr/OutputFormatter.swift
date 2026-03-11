@@ -5,6 +5,8 @@ enum OutputFormatter {
                        source: String, languages: [String], mode: RecognitionMode,
                        piiRedacted: Bool = false) throws -> String {
         switch format {
+        case .plain:
+            return formatPlain(result: result)
         case .text:
             return formatText(result: result)
         case .json:
@@ -16,6 +18,11 @@ enum OutputFormatter {
         case .pdfText, .pdfImage:
             fatalError("PDF formats are handled by PDFGenerator")
         }
+    }
+
+    private static func formatPlain(result: OCRResult) -> String {
+        let sorted = ObservationLayout.ordered(result.observations)
+        return sorted.map(\.text).joined(separator: "\n")
     }
 
     private static func formatText(result: OCRResult) -> String {

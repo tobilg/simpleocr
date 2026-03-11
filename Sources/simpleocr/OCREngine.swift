@@ -12,7 +12,8 @@ enum OCREngine {
     }
 
     static func performOCR(on fileURL: URL, languages: [String],
-                           mode: RecognitionMode, minConfidence: Float) throws -> OCRResult {
+                           mode: RecognitionMode, minConfidence: Float,
+                           outputFormat: OutputFormat = .text) throws -> OCRResult {
         guard let ciImage = CIImage(contentsOf: fileURL) else {
             throw CLIError.ocrFailed("Failed to load image: \(fileURL.path)")
         }
@@ -39,10 +40,17 @@ enum OCREngine {
             remapToOriginal(obs, padding: padding, paddedExtent: paddedExtent, originalExtent: extent)
         }
 
+        // In fast mode, skip all supplemental passes and return the primary result.
+        guard mode == .accurate else {
+            let structuredRegions = ObservationLayout.structuredRegions(observations)
+            return OCRResult(observations: observations, imageSize: imageSize, structuredRegions: structuredRegions)
+        }
+
         // Additional passes at higher resolutions to catch small text (e.g. single digits
-        // in table cells) that Vision misses. Merge high-confidence numeric and currency
-        // tokens back into the main result set to improve table fidelity.
-        if extent.width < 2000 || extent.height < 2000 {
+        // in table cells) that Vision misses. Only run when the primary pass found few
+        // numeric tokens, indicating small digits may have been missed.
+        let needsSupplementalScales = outputFormat == .tableJSON || hasSparsNumericContent(observations)
+        if needsSupplementalScales && (extent.width < 2000 || extent.height < 2000) {
             let supplementalScales: [CGFloat] = max(extent.width, extent.height) < 1400 ? [2.0, 3.0] : [2.0]
 
             for scale in supplementalScales {
@@ -75,21 +83,36 @@ enum OCREngine {
             minConfidence: minConfidence
         )
 
+        // Structured recovery is expensive — only run for formats that use it.
+        let needsStructuredRecovery = outputFormat == .json || outputFormat == .tableJSON
         let structuredRegions = ObservationLayout.structuredRegions(observations)
-        let structuredObservations = try recoverStructuredRegions(
-            from: ciImage,
-            regions: structuredRegions,
-            languages: languages,
-            mode: mode,
-            minConfidence: minConfidence
-        )
 
-        for extra in structuredObservations {
-            mergeSupplementalObservation(extra, into: &observations, allowAppend: false)
+        if needsStructuredRecovery {
+            let structuredObservations = try recoverStructuredRegions(
+                from: ciImage,
+                regions: structuredRegions,
+                languages: languages,
+                mode: mode,
+                minConfidence: minConfidence
+            )
+
+            for extra in structuredObservations {
+                mergeSupplementalObservation(extra, into: &observations, allowAppend: false)
+            }
+
+            let finalStructuredRegions = ObservationLayout.structuredRegions(observations)
+            return OCRResult(observations: observations, imageSize: imageSize, structuredRegions: finalStructuredRegions)
         }
 
-        let finalStructuredRegions = ObservationLayout.structuredRegions(observations)
-        return OCRResult(observations: observations, imageSize: imageSize, structuredRegions: finalStructuredRegions)
+        return OCRResult(observations: observations, imageSize: imageSize, structuredRegions: structuredRegions)
+    }
+
+    /// Check if the primary pass has sparse numeric content, suggesting small digits were missed.
+    private static func hasSparsNumericContent(_ observations: [Observation]) -> Bool {
+        guard !observations.isEmpty else { return false }
+        let numericCount = observations.filter { isSupplementalNumericToken($0.text) }.count
+        // If less than 10% of observations are numeric, supplemental scales may help
+        return Double(numericCount) / Double(observations.count) < 0.1
     }
 
     /// Add white padding around the image so text near edges isn't clipped.
@@ -261,6 +284,7 @@ enum OCREngine {
     }
 
     private static func shouldRefineTextObservation(_ observation: Observation) -> Bool {
+        guard observation.confidence < 0.9 else { return false }
         let trimmed = observation.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 8, trimmed.count <= 80 else { return false }
         guard trimmed.contains(where: \.isLetter) else { return false }
@@ -295,9 +319,9 @@ enum OCREngine {
     }
 
     private static func refinementScales(for observation: Observation) -> [CGFloat] {
-        if observation.boundingBox.height < 0.015 { return [4.0, 5.0, 6.0] }
-        if observation.boundingBox.height < 0.025 { return [3.0, 4.0, 5.0] }
-        return [2.5, 3.0, 4.0]
+        if observation.boundingBox.height < 0.015 { return [5.0] }
+        if observation.boundingBox.height < 0.025 { return [4.0] }
+        return [3.0]
     }
 
     private static func isTextRefinementToken(_ text: String) -> Bool {
@@ -559,7 +583,7 @@ enum OCREngine {
 
                 let observations = try bestLocalRecognition(
                     baseImage: image.cropped(to: cropRect),
-                    scales: [6.0, 7.0],
+                    scales: [6.0],
                     languages: ["en-US"],
                     mode: .accurate,
                     minConfidence: max(0.12, minConfidence * 0.6),
@@ -676,11 +700,28 @@ enum OCREngine {
         var bestObservations: [Observation] = []
         var bestScore = -Double.infinity
 
-        for variant in LocalImageVariant.allCases {
-            let variantImage = applyLocalVariant(variant, to: baseImage)
+        for scale in scales {
+            let upscaled = baseImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            let observations = try runRecognition(
+                ciImage: upscaled,
+                languages: languages,
+                mode: mode,
+                minConfidence: minConfidence,
+                languageCorrection: languageCorrection
+            ).filter { filter($0.text) }
 
+            let score = scoreLocalRecognition(observations)
+            if score > bestScore {
+                bestScore = score
+                bestObservations = observations
+            }
+        }
+
+        // Only try enhanced variant if original produced no results
+        if bestObservations.isEmpty {
+            let enhanced = applyLocalVariant(.balanced, to: baseImage)
             for scale in scales {
-                let upscaled = variantImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                let upscaled = enhanced.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
                 let observations = try runRecognition(
                     ciImage: upscaled,
                     languages: languages,

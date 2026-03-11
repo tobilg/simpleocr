@@ -36,6 +36,7 @@ enum RecognitionMode: String {
 }
 
 enum OutputFormat: String {
+    case plain
     case text
     case json
     case tableJSON = "table-json"

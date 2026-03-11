@@ -37,20 +37,23 @@ The binary will be available at `.build/release/simpleocr`.
 
 ```bash
 simpleocr <image-path> [options]
+simpleocr - [options]              # read image from stdin
 ```
 
 ### Arguments
 
-- `image-path`: path to the input image file
+- `image-path`: path to the input image file (use `-` to read from stdin)
 
 ### Options
 
 - `--lang <codes>`: comma-separated language codes, default `de-DE,en-US`
 - `--mode <level>`: `accurate` or `fast`, default `accurate`
-- `--format <type>`: `text`, `json`, `table-json`, `pdf-text`, or `pdf-image`, default `text`
+- `--format <type>`: `plain`, `text`, `json`, `table-json`, `pdf-text`, or `pdf-image`, default `text`
 - `--output <path>`: output file path for PDF formats; defaults to the input basename with `.pdf`
 - `--min-confidence <val>`: minimum confidence threshold between `0.0` and `1.0`, default `0.3`
 - `--pii`: redact personally identifiable information from recognized text
+- `--error-format <type>`: error output format: `text` or `json`, default `text`
+- `--describe-formats`: describe available output formats and exit
 - `--version`: print version and exit
 - `--help`, `-h`: print help and exit
 
@@ -65,7 +68,13 @@ simpleocr <image-path> [options]
 
 ## Examples
 
-Basic OCR:
+Basic OCR (plain text, best for LLMs):
+
+```bash
+.build/release/simpleocr examples/example-bill.png --format plain
+```
+
+OCR with spatial coordinates:
 
 ```bash
 .build/release/simpleocr examples/example-bill.png
@@ -101,11 +110,41 @@ Redact PII before returning text:
 .build/release/simpleocr examples/example-bill.png --pii
 ```
 
+Read image from stdin:
+
+```bash
+cat screenshot.png | .build/release/simpleocr - --format plain
+```
+
+JSON errors for programmatic consumption:
+
+```bash
+.build/release/simpleocr missing.png --error-format json
+# stderr: {"error":"Error: File not found or unreadable: missing.png","code":1}
+```
+
+Describe available output formats:
+
+```bash
+.build/release/simpleocr --describe-formats
+```
+
 ## Output Formats
+
+### `plain`
+
+Plain text output, one line per recognized text element, sorted top-to-bottom then left-to-right. Best for feeding into LLMs or other text processing tools.
+
+Example:
+
+```text
+Muster GmbH
+Industriestrasse 42, 80331 Munchen
+```
 
 ### `text`
 
-One line per observation, sorted top-to-bottom and then left-to-right for near-equal rows.
+Spatially-aware text with normalized coordinates (y,x) prepended to each line. Useful when position matters.
 
 Example:
 
