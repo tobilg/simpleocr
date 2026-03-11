@@ -30,7 +30,8 @@ playground.xcworkspace
 # .swiftpm
 
 .build/
-.claude/
+.claude/*
+!.claude/skills/
 # CocoaPods
 #
 # We recommend against adding the Pods directory to your .gitignore. However
@@ -65,6 +66,5 @@ fastlane/test_output
 .DS_Store
 requirements/
 examples/
-.claude/
 examples/
 *.pdf

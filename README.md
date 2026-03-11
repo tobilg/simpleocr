@@ -19,19 +19,12 @@ It uses Apple's Vision framework, has no third-party dependencies, and is design
 ## Requirements
 
 - macOS 13 or newer
-- Apple Vision / CoreGraphics frameworks
-- Swift Package Manager
-- Apple developer tools with Swift support installed
 
 ## Install
 
 ```bash
-git clone https://github.com/tobilg/simpleocr.git
-cd simpleocr
-./scripts/build-local.sh -c release
+brew install tobilg/simpleocr/simpleocr
 ```
-
-The binary will be available at `.build/release/simpleocr`.
 
 ## Usage
 
@@ -71,62 +64,62 @@ simpleocr - [options]              # read image from stdin
 Basic OCR (plain text, best for LLMs):
 
 ```bash
-.build/release/simpleocr examples/example-bill.png --format plain
+simpleocr examples/example-bill.png --format plain
 ```
 
 OCR with spatial coordinates:
 
 ```bash
-.build/release/simpleocr examples/example-bill.png
+simpleocr examples/example-bill.png
 ```
 
 JSON output:
 
 ```bash
-.build/release/simpleocr examples/example-bill.png --format json
+simpleocr examples/example-bill.png --format json
 ```
 
 Table-focused JSON output:
 
 ```bash
-.build/release/simpleocr examples/example-bill.png --format table-json
+simpleocr examples/example-bill.png --format table-json
 ```
 
 Fast mode with German-first language hints:
 
 ```bash
-.build/release/simpleocr examples/example-bill.png --lang de-DE,en-US --mode fast
+simpleocr examples/example-bill.png --lang de-DE,en-US --mode fast
 ```
 
 Generate a searchable image PDF:
 
 ```bash
-.build/release/simpleocr examples/example-bill.png --format pdf-image --output bill-searchable.pdf
+simpleocr examples/example-bill.png --format pdf-image --output bill-searchable.pdf
 ```
 
 Redact PII before returning text:
 
 ```bash
-.build/release/simpleocr examples/example-bill.png --pii
+simpleocr examples/example-bill.png --pii
 ```
 
 Read image from stdin:
 
 ```bash
-cat screenshot.png | .build/release/simpleocr - --format plain
+cat screenshot.png | simpleocr - --format plain
 ```
 
 JSON errors for programmatic consumption:
 
 ```bash
-.build/release/simpleocr missing.png --error-format json
+simpleocr missing.png --error-format json
 # stderr: {"error":"Error: File not found or unreadable: missing.png","code":1}
 ```
 
 Describe available output formats:
 
 ```bash
-.build/release/simpleocr --describe-formats
+simpleocr --describe-formats
 ```
 
 ## Output Formats
@@ -219,7 +212,27 @@ Creates a PDF page containing rendered OCR text only.
 
 Creates a PDF containing the original image with an invisible text layer for search and copy/paste.
 
-## Build
+## Claude Code Skill
+
+This repo includes a [Claude Code](https://claude.ai/claude-code) skill that lets coding agents run OCR directly:
+
+```
+/ocr examples/example-bill.png
+/ocr screenshot.png --format json
+```
+
+The skill is defined in `.claude/skills/ocr/SKILL.md` and is available automatically when Claude Code is used in this project.
+
+To use the skill in other projects, install it to your personal skills directory:
+
+```bash
+mkdir -p ~/.claude/skills/ocr
+curl -fsSL https://raw.githubusercontent.com/tobilg/simpleocr/main/.claude/skills/ocr/SKILL.md -o ~/.claude/skills/ocr/SKILL.md
+```
+
+## Development
+
+### Build from source
 
 Use the wrapper script so SwiftPM and Clang caches stay inside the repository:
 
@@ -264,6 +277,7 @@ If plain `swift build` already works on your machine, you can keep using it.
 ```text
 Package.swift
 README.md
+.claude/skills/ocr/SKILL.md
 Sources/simpleocr/main.swift
 Sources/simpleocr/CLI.swift
 Sources/simpleocr/Models.swift
